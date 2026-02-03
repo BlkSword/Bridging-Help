@@ -1,9 +1,20 @@
 package com.bridginghelp.app.navigation
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+
 /**
  * 导航目标定义
  */
 sealed class Destination(val route: String) {
+    /**
+     * 主页面（底部导航栏）
+     */
+    data object MyDevice : Destination("my_device")
+    data object RemoteAssist : Destination("remote_assist")
+    data object Profile : Destination("profile")
+
     /**
      * 角色选择
      */
@@ -27,6 +38,37 @@ sealed class Destination(val route: String) {
      * 设置
      */
     data object Settings : Destination("settings")
+}
+
+/**
+ * 底部导航项
+ */
+sealed class BottomNavItem(
+    val route: String,
+    val title: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector
+) {
+    data object MyDevice : BottomNavItem(
+        route = Destination.MyDevice.route,
+        title = "我的设备",
+        icon = Icons.Filled.Phone
+    )
+
+    data object RemoteAssist : BottomNavItem(
+        route = Destination.RemoteAssist.route,
+        title = "远程协助",
+        icon = Icons.Filled.Phone
+    )
+
+    data object Profile : BottomNavItem(
+        route = Destination.Profile.route,
+        title = "我的",
+        icon = Icons.Filled.Person
+    )
+
+    companion object {
+        val items = listOf(MyDevice, RemoteAssist, Profile)
+    }
 }
 
 /**

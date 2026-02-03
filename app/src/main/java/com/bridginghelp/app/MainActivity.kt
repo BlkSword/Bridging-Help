@@ -8,9 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import androidx.navigation.compose.rememberNavController
-import com.bridginghelp.app.navigation.BridgingHelpNavGraph
-import com.bridginghelp.core.model.DeviceRole
+import com.bridginghelp.app.navigation.BridgingHelpAppNavGraph
 import com.bridginghelp.ui.theme.BridgingHelpTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -28,8 +26,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val navController = rememberNavController()
-                    BridgingHelpNavGraph(navController = navController)
+                    BridgingHelpAppNavGraph()
                 }
             }
         }

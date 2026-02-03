@@ -57,16 +57,25 @@ class SessionManager @Inject constructor(
 
     private var activeSession: RemoteSession? = null
     private var heartbeatJob: Job? = null
+    private var isInitialized = false
 
     init {
-        // 初始化WebRTC工厂
-        peerConnectionFactory.initialize()
-
+        // 不在 init 块中初始化 WebRTC，延迟到首次使用时
         // 监听信令消息
         scope.launch {
             signalingClient.incomingMessages.collect { message ->
                 handleSignalingMessage(message)
             }
+        }
+    }
+
+    /**
+     * 确保已初始化
+     */
+    private fun ensureInitialized() {
+        if (!isInitialized) {
+            val result = peerConnectionFactory.initialize()
+            isInitialized = result is Result.Success
         }
     }
 
@@ -84,6 +93,9 @@ class SessionManager @Inject constructor(
      */
     suspend fun createSession(remoteDeviceId: String): Result<String> {
         LogWrapper.d(TAG, "Creating session with device: $remoteDeviceId")
+
+        // 确保 WebRTC 已初始化
+        ensureInitialized()
 
         return try {
             val sessionId = generateSessionId()
@@ -122,6 +134,9 @@ class SessionManager @Inject constructor(
      */
     suspend fun joinSession(sessionId: String): Result<Unit> {
         LogWrapper.d(TAG, "Joining session: $sessionId")
+
+        // 确保 WebRTC 已初始化
+        ensureInitialized()
 
         return try {
             // 创建PeerConnection

@@ -76,7 +76,8 @@ android {
             excludes += "META-INF/annotations-23.0.0.jar"
         }
         jniLibs {
-            pickFirsts.add("lib/*/libannotations.so")
+            // 处理 WebRTC native 库冲突
+            pickFirsts.add("lib/**/*.so")
         }
     }
 }
@@ -94,6 +95,10 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:network"))
     implementation(project(":core:permissions"))
+    implementation(project(":core:discovery"))
+    implementation(project(":core:filetransfer"))
+    implementation(project(":core:audio"))
+    implementation(project(":core:clipboard"))
 
     // Feature modules
     implementation(project(":feature:capture"))
@@ -131,6 +136,9 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
+
+    // QR Code
+    implementation(libs.zxing.android.embed)
 
     // Testing
     testImplementation(libs.junit.jupiter.api)
