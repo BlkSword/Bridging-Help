@@ -1,0 +1,85 @@
+<resources>
+    <string name="app_name">BridgingHelp</string>
+
+    <!-- 角色选择 -->
+    <string name="role_selection_title">选择角色</string>
+    <string name="role_controller">控制端</string>
+    <string name="role_controlled">受控端</string>
+    <string name="role_controller_desc">控制其他设备</string>
+    <string name="role_controlled_desc">被其他设备控制</string>
+
+    <!-- 权限请求 -->
+    <string name="permissions_title">需要权限</string>
+    <string name="permissions_description">此应用需要以下权限才能正常运行</string>
+    <string name="permission_granted">已授予</string>
+    <string name="permission_denied">已拒绝</string>
+    <string name="permission_request">请求</string>
+    <string name="permission_required_title">需要权限</string>
+    <string name="permission_required_message">请授予所需的权限</string>
+    <string name="permission_settings">去设置</string>
+
+    <!-- 屏幕捕获权限 -->
+    <string name="permission_screen_capture">屏幕捕获权限</string>
+    <string name="permission_screen_capture_desc">需要屏幕捕获权限以共享屏幕</string>
+
+    <!-- 无障碍权限 -->
+    <string name="permission_accessibility">无障碍权限</string>
+    <string name="permission_accessibility_desc">需要无障碍权限以接收远程输入</string>
+    <string name="accessibility_service_description">远程协助输入服务，允许接收远程触摸和键盘输入</string>
+
+    <!-- 通知权限 -->
+    <string name="permission_notification">通知权限</string>
+    <string name="permission_notification_desc">需要通知权限以显示连接状态</string>
+
+    <!-- 连接状态 -->
+    <string name="connection_status_disconnected">未连接</string>
+    <string name="connection_status_connecting">连接中…</string>
+    <string name="connection_status_connected">已连接</string>
+    <string name="connection_status_reconnecting">重连中…</string>
+    <string name="connection_status_failed">连接失败</string>
+
+    <!-- 质量指示 -->
+    <string name="quality_excellent">优秀</string>
+    <string name="quality_good">良好</string>
+    <string name="quality_fair">一般</string>
+    <string name="quality_poor">较差</string>
+
+    <!-- 控制端 -->
+    <string name="controller_devices_title">可用设备</string>
+    <string name="controller_no_devices">未发现可用设备</string>
+    <string name="controller_connect">连接</string>
+    <string name="controller_disconnect">断开</string>
+    <string name="controller_session_title">远程控制</string>
+
+    <!-- 受控端 -->
+    <string name="controlled_title">被控制设备</string>
+    <string name="controlled_status_idle">等待连接…</string>
+    <string name="controlled_status_connecting">正在连接…</string>
+    <string name="controlled_status_connected">已连接到 %s</string>
+    <string name="controlled_session_start">开始会话</string>
+    <string name="controlled_session_end">结束会话</string>
+
+    <!-- 错误消息 -->
+    <string name="error_network_unavailable">网络不可用</string>
+    <string name="error_permission_denied">权限被拒绝</string>
+    <string name="error_connection_failed">连接失败</string>
+    <string name="error_session_expired">会话已过期</string>
+    <string name="error_unknown">发生未知错误</string>
+
+    <!-- 通知 -->
+    <string name="notification_channel_name">远程协助</string>
+    <string name="notification_channel_description">远程协助会话通知</string>
+    <string name="notification_capture_title">屏幕共享中</string>
+    <string name="notification_capture_text">正在与设备共享屏幕</string>
+    <string name="notification_session_title">远程协助会话</string>
+    <string name="notification_session_text">已连接到远程设备</string>
+    <string name="notification_stop">停止</string>
+
+    <!-- 设置 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_video_quality">视频质量</string>
+    <string name="settings_frame_rate">帧率</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_version">版本 %s</string>
+
+</resources>
