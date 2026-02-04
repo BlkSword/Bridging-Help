@@ -45,7 +45,8 @@ sealed class ClipboardSyncError {
  */
 @Singleton
 class ClipboardSyncManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val deviceInfoProvider: LocalDeviceInfoProvider
 ) : ClipboardManager.OnPrimaryClipChangedListener {
 
     companion object {
@@ -271,11 +272,24 @@ class ClipboardSyncManager @Inject constructor(
      * 获取本地设备ID
      */
     private fun getLocalDeviceId(): String {
-        // TODO: 从LocalDeviceInfo获取
-        return android.provider.Settings.Secure.getString(
-            context.contentResolver,
-            android.provider.Settings.Secure.ANDROID_ID
-        )
+        return deviceInfoProvider.getDeviceId()
+    }
+
+    /**
+     * 获取本地设备信息
+     */
+    fun getLocalDeviceInfo(): DeviceInfo {
+        return deviceInfoProvider.getDeviceInfo()
+    }
+
+    /**
+     * 设置本地设备信息
+     */
+    fun setLocalDeviceInfo(deviceInfo: DeviceInfo) {
+        if (deviceInfoProvider is DefaultLocalDeviceInfoProvider) {
+            deviceInfoProvider.setDeviceInfo(deviceInfo)
+            LogWrapper.i(TAG, "Local device info updated: ${deviceInfo.deviceName}")
+        }
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.bridginghelp.app.ui.profile
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -25,7 +28,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 @Composable
 fun ProfileScreen(
     viewModel: ProfileViewModel = hiltViewModel(),
-    onNavigateToSettings: () -> Unit = {}
+    onNavigateToSettings: () -> Unit = {},
+    onNavigateToHelp: () -> Unit = {},
+    onNavigateToFeedback: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -60,8 +65,8 @@ fun ProfileScreen(
 
             // 其他选项
             OtherSection(
-                onHelpClick = { viewModel.showHelp() },
-                onFeedbackClick = { viewModel.showFeedback() }
+                onHelpClick = onNavigateToHelp,
+                onFeedbackClick = onNavigateToFeedback
             )
 
             Spacer(modifier = Modifier.weight(1f))
@@ -141,6 +146,8 @@ private fun SettingsSection(
     onAboutClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Column(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -156,6 +163,15 @@ private fun SettingsSection(
             title = "应用设置",
             description = "通用设置、权限管理",
             onClick = onSettingsClick
+        )
+
+        SettingItem(
+            icon = Icons.Filled.Settings,
+            title = "系统设置",
+            description = "打开手机系统设置",
+            onClick = {
+                context.startActivity(Intent(Settings.ACTION_SETTINGS))
+            }
         )
 
         SettingItem(

@@ -254,6 +254,7 @@ class FileTransferManager @Inject constructor(
         sessionId: String,
         fileInfo: FileInfo,
         savePath: String,
+        remoteAddress: String,
         onProgress: (Float) -> Unit = {}
     ): Result<String> {
         LogWrapper.d(TAG, "Starting download: ${fileInfo.fileName}")
@@ -275,10 +276,96 @@ class FileTransferManager @Inject constructor(
             try {
                 _transferState.value = FileTransferState.Connecting(sessionId)
 
-                // TODO: 实现从远程设备下载文件的逻辑
-                // 这需要远程设备提供文件传输服务
+                // 连接到远程设备
+                val socket = Socket()
+                socket.connect(java.net.InetSocketAddress(remoteAddress, DEFAULT_PORT), 10000)
 
-                delay(100) // 模拟下载
+                val inputStream = socket.getInputStream()
+                val dataInputStream = DataInputStream(inputStream)
+
+                // 发送文件下载请求
+                val request = FileTransferRequest(
+                    transferId = transferId,
+                    fileId = fileInfo.fileId,
+                    fileName = fileInfo.fileName,
+                    offset = 0 // 从头开始下载
+                )
+                val requestJson = serializeRequest(request)
+
+                // 发送请求
+                val outputStream = socket.getOutputStream()
+                val dataOutputStream = DataOutputStream(outputStream)
+                dataOutputStream.writeInt(requestJson.toByteArray().size)
+                dataOutputStream.write(requestJson.toByteArray())
+                dataOutputStream.flush()
+
+                // 接收文件头
+                val headerSize = dataInputStream.readInt()
+                val headerBytes = ByteArray(headerSize)
+                dataInputStream.readFully(headerBytes)
+                val headerJson = String(headerBytes)
+                val header = deserializeHeader(headerJson)
+
+                // 创建文件并保存
+                val outputFile = File(savePath)
+                val fileDir = outputFile.parentFile
+                if (fileDir != null && !fileDir.exists()) {
+                    fileDir.mkdirs()
+                }
+
+                val fileOutputStream = FileOutputStream(outputFile)
+                val buffer = ByteArray(BUFFER_SIZE)
+                var totalBytesRead = 0L
+                var lastUpdateTime = System.currentTimeMillis()
+                var bytesInSecond = 0L
+
+                _transferState.value = FileTransferState.Transferring(
+                    transferId = transferId,
+                    fileName = task.fileName,
+                    progress = 0f,
+                    bytesTransferred = 0,
+                    totalBytes = task.fileSize,
+                    speed = 0
+                )
+
+                while (totalBytesRead < header.fileSize) {
+                    val bytesToRead = minOf(buffer.size.toLong(), (header.fileSize - totalBytesRead)).toInt()
+                    val bytesRead = dataInputStream.read(buffer, 0, bytesToRead)
+                    if (bytesRead == -1) break
+
+                    fileOutputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead
+                    bytesInSecond += bytesRead
+
+                    // 更新进度
+                    val progress = (totalBytesRead.toFloat() / header.fileSize * 100)
+                    onProgress(progress)
+
+                    // 每秒更新一次状态
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastUpdateTime >= 1000) {
+                        _transferState.value = FileTransferState.Transferring(
+                            transferId = transferId,
+                            fileName = task.fileName,
+                            progress = progress,
+                            bytesTransferred = totalBytesRead,
+                            totalBytes = header.fileSize,
+                            speed = bytesInSecond
+                        )
+                        bytesInSecond = 0
+                        lastUpdateTime = currentTime
+                    }
+                }
+
+                fileOutputStream.close()
+                socket.close()
+
+                // 更新任务状态
+                activeTransfers[transferId] = task.copy(
+                    status = TransferStatus.COMPLETED,
+                    progress = 100f,
+                    bytesTransferred = totalBytesRead
+                )
 
                 _transferState.value = FileTransferState.Completed(
                     transferId = transferId,
@@ -293,6 +380,9 @@ class FileTransferManager @Inject constructor(
                 _transferState.value = FileTransferState.Error(
                     transferId = transferId,
                     error = FileTransferError.Unknown(e.message ?: "Unknown error")
+                )
+                activeTransfers[transferId] = task.copy(
+                    status = TransferStatus.FAILED
                 )
             }
         }
@@ -324,31 +414,324 @@ class FileTransferManager @Inject constructor(
     }
 
     /**
-     * 恢复传输
+     * 恢复传输（支持断点续传）
      */
-    suspend fun resumeTransfer(transferId: String): Result<Unit> {
+    suspend fun resumeTransfer(
+        transferId: String,
+        remoteAddress: String = "",
+        fileInfo: FileInfo? = null
+    ): Result<Unit> {
         LogWrapper.d(TAG, "Resuming transfer: $transferId")
 
         activeTransfers[transferId]?.let { task ->
             if (task.status == TransferStatus.PAUSED) {
-                // 重新开始传输
+                // 计算已传输的字节数（用于断点续传）
+                val offset = if (task.bytesTransferred > 0) task.bytesTransferred else 0L
+
                 when (task.direction) {
                     TransferDirection.UPLOAD -> {
-                        startUpload(
-                            task.sessionId,
-                            task.filePath,
-                            "", // 需要保存remoteAddress
+                        // 断点续传上传
+                        startUploadWithOffset(
+                            sessionId = task.sessionId,
+                            filePath = task.filePath,
+                            remoteAddress = remoteAddress,
+                            offset = offset,
                             onProgress = {}
                         )
                     }
                     TransferDirection.DOWNLOAD -> {
-                        // TODO: 实现断点续传
+                        // 断点续传下载
+                        val info = fileInfo ?: FileInfo(
+                            fileId = task.fileId,
+                            fileName = task.fileName,
+                            fileSize = task.fileSize,
+                            mimeType = null,
+                            checksum = null
+                        )
+                        startDownloadWithOffset(
+                            sessionId = task.sessionId,
+                            fileInfo = info,
+                            savePath = task.filePath,
+                            remoteAddress = remoteAddress,
+                            offset = offset,
+                            onProgress = {}
+                        )
                     }
                 }
             }
         }
 
         return Result.Success(Unit)
+    }
+
+    /**
+     * 带偏移量的上传（断点续传）
+     */
+    private suspend fun startUploadWithOffset(
+        sessionId: String,
+        filePath: String,
+        remoteAddress: String,
+        offset: Long,
+        onProgress: (Float) -> Unit = {}
+    ): Result<String> {
+        LogWrapper.d(TAG, "Starting upload with offset: $filePath, offset: $offset")
+
+        val file = File(filePath)
+        if (!file.exists()) {
+            return Result.Error(ErrorEntity.Validation("File not found: $filePath"))
+        }
+
+        val transferId = generateTransferId()
+        val task = FileTransferTask(
+            transferId = transferId,
+            sessionId = sessionId,
+            fileId = UUID.randomUUID().toString(),
+            fileName = file.name,
+            filePath = filePath,
+            fileSize = file.length(),
+            direction = TransferDirection.UPLOAD,
+            bytesTransferred = offset
+        )
+
+        activeTransfers[transferId] = task
+
+        val job = scope.launch {
+            try {
+                _transferState.value = FileTransferState.Connecting(sessionId)
+
+                val socket = Socket()
+                socket.connect(java.net.InetSocketAddress(remoteAddress, DEFAULT_PORT), 10000)
+
+                val outputStream = socket.getOutputStream()
+                val dataOutputStream = DataOutputStream(outputStream)
+
+                // 发送带偏移量的文件头信息
+                val header = FileTransferHeader(
+                    transferId = transferId,
+                    fileId = task.fileId,
+                    fileName = task.fileName,
+                    fileSize = task.fileSize,
+                    chunkSize = CHUNK_SIZE.toLong(),
+                    offset = offset // 断点续传偏移量
+                )
+
+                val headerJson = serializeHeaderWithOffset(header)
+                dataOutputStream.writeInt(headerJson.toByteArray().size)
+                dataOutputStream.write(headerJson.toByteArray())
+                dataOutputStream.flush()
+
+                // 从偏移量位置开始读取文件
+                val fileInputStream = FileInputStream(file)
+                fileInputStream.skip(offset) // 跳过已传输的字节
+
+                val buffer = ByteArray(BUFFER_SIZE)
+                var totalBytesRead = offset
+                var lastUpdateTime = System.currentTimeMillis()
+                var bytesInSecond = 0L
+
+                _transferState.value = FileTransferState.Transferring(
+                    transferId = transferId,
+                    fileName = task.fileName,
+                    progress = (offset.toFloat() / task.fileSize * 100),
+                    bytesTransferred = offset,
+                    totalBytes = task.fileSize,
+                    speed = 0
+                )
+
+                while (true) {
+                    val bytesRead = fileInputStream.read(buffer)
+                    if (bytesRead == -1) break
+
+                    outputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead
+                    bytesInSecond += bytesRead
+
+                    val progress = (totalBytesRead.toFloat() / task.fileSize * 100)
+                    onProgress(progress)
+
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastUpdateTime >= 1000) {
+                        _transferState.value = FileTransferState.Transferring(
+                            transferId = transferId,
+                            fileName = task.fileName,
+                            progress = progress,
+                            bytesTransferred = totalBytesRead,
+                            totalBytes = task.fileSize,
+                            speed = bytesInSecond
+                        )
+                        bytesInSecond = 0
+                        lastUpdateTime = currentTime
+                    }
+                }
+
+                fileInputStream.close()
+                socket.close()
+
+                activeTransfers[transferId] = task.copy(
+                    status = TransferStatus.COMPLETED,
+                    progress = 100f,
+                    bytesTransferred = totalBytesRead
+                )
+
+                _transferState.value = FileTransferState.Completed(
+                    transferId = transferId,
+                    fileName = task.fileName,
+                    filePath = filePath
+                )
+
+                LogWrapper.i(TAG, "Upload with offset completed: $filePath")
+
+            } catch (e: Exception) {
+                LogWrapper.e(TAG, "Upload with offset failed", e)
+                _transferState.value = FileTransferState.Error(
+                    transferId = transferId,
+                    error = FileTransferError.Unknown(e.message ?: "Unknown error")
+                )
+                activeTransfers[transferId] = task.copy(
+                    status = TransferStatus.FAILED
+                )
+            }
+        }
+
+        transferJobs[transferId] = job
+        return Result.Success(transferId)
+    }
+
+    /**
+     * 带偏移量的下载（断点续传）
+     */
+    private suspend fun startDownloadWithOffset(
+        sessionId: String,
+        fileInfo: FileInfo,
+        savePath: String,
+        remoteAddress: String,
+        offset: Long,
+        onProgress: (Float) -> Unit = {}
+    ): Result<String> {
+        LogWrapper.d(TAG, "Starting download with offset: ${fileInfo.fileName}, offset: $offset")
+
+        val transferId = generateTransferId()
+        val task = FileTransferTask(
+            transferId = transferId,
+            sessionId = sessionId,
+            fileId = fileInfo.fileId,
+            fileName = fileInfo.fileName,
+            filePath = savePath,
+            fileSize = fileInfo.fileSize,
+            direction = TransferDirection.DOWNLOAD,
+            bytesTransferred = offset
+        )
+
+        activeTransfers[transferId] = task
+
+        val job = scope.launch {
+            try {
+                _transferState.value = FileTransferState.Connecting(sessionId)
+
+                val socket = Socket()
+                socket.connect(java.net.InetSocketAddress(remoteAddress, DEFAULT_PORT), 10000)
+
+                val inputStream = socket.getInputStream()
+                val dataInputStream = DataInputStream(inputStream)
+
+                // 发送带偏移量的下载请求
+                val request = FileTransferRequest(
+                    transferId = transferId,
+                    fileId = fileInfo.fileId,
+                    fileName = fileInfo.fileName,
+                    offset = offset // 断点续传偏移量
+                )
+                val requestJson = serializeRequest(request)
+
+                val outputStream = socket.getOutputStream()
+                val dataOutputStream = DataOutputStream(outputStream)
+                dataOutputStream.writeInt(requestJson.toByteArray().size)
+                dataOutputStream.write(requestJson.toByteArray())
+                dataOutputStream.flush()
+
+                // 接收文件头
+                val headerSize = dataInputStream.readInt()
+                val headerBytes = ByteArray(headerSize)
+                dataInputStream.readFully(headerBytes)
+                val headerJson = String(headerBytes)
+                val header = deserializeHeader(headerJson)
+
+                // 以追加模式打开文件
+                val outputFile = File(savePath)
+                val fileOutputStream = FileOutputStream(outputFile, true) // 追加模式
+
+                val buffer = ByteArray(BUFFER_SIZE)
+                var totalBytesRead = offset
+                var lastUpdateTime = System.currentTimeMillis()
+                var bytesInSecond = 0L
+
+                _transferState.value = FileTransferState.Transferring(
+                    transferId = transferId,
+                    fileName = task.fileName,
+                    progress = (offset.toFloat() / header.fileSize * 100),
+                    bytesTransferred = offset,
+                    totalBytes = header.fileSize,
+                    speed = 0
+                )
+
+                while (totalBytesRead < header.fileSize) {
+                    val bytesToRead = minOf(buffer.size.toLong(), (header.fileSize - totalBytesRead)).toInt()
+                    val bytesRead = dataInputStream.read(buffer, 0, bytesToRead)
+                    if (bytesRead == -1) break
+
+                    fileOutputStream.write(buffer, 0, bytesRead)
+                    totalBytesRead += bytesRead
+                    bytesInSecond += bytesRead
+
+                    val progress = (totalBytesRead.toFloat() / header.fileSize * 100)
+                    onProgress(progress)
+
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastUpdateTime >= 1000) {
+                        _transferState.value = FileTransferState.Transferring(
+                            transferId = transferId,
+                            fileName = task.fileName,
+                            progress = progress,
+                            bytesTransferred = totalBytesRead,
+                            totalBytes = header.fileSize,
+                            speed = bytesInSecond
+                        )
+                        bytesInSecond = 0
+                        lastUpdateTime = currentTime
+                    }
+                }
+
+                fileOutputStream.close()
+                socket.close()
+
+                activeTransfers[transferId] = task.copy(
+                    status = TransferStatus.COMPLETED,
+                    progress = 100f,
+                    bytesTransferred = totalBytesRead
+                )
+
+                _transferState.value = FileTransferState.Completed(
+                    transferId = transferId,
+                    fileName = task.fileName,
+                    filePath = savePath
+                )
+
+                LogWrapper.i(TAG, "Download with offset completed: ${fileInfo.fileName}")
+
+            } catch (e: Exception) {
+                LogWrapper.e(TAG, "Download with offset failed", e)
+                _transferState.value = FileTransferState.Error(
+                    transferId = transferId,
+                    error = FileTransferError.Unknown(e.message ?: "Unknown error")
+                )
+                activeTransfers[transferId] = task.copy(
+                    status = TransferStatus.FAILED
+                )
+            }
+        }
+
+        transferJobs[transferId] = job
+        return Result.Success(transferId)
     }
 
     /**
@@ -420,6 +803,57 @@ class FileTransferManager @Inject constructor(
         }
         """.trimIndent()
     }
+
+    /**
+     * 序列化带偏移量的文件头（断点续传）
+     */
+    private fun serializeHeaderWithOffset(header: FileTransferHeader): String {
+        return """
+        {
+            "transferId": "${header.transferId}",
+            "fileId": "${header.fileId}",
+            "fileName": "${header.fileName}",
+            "fileSize": ${header.fileSize},
+            "chunkSize": ${header.chunkSize},
+            "offset": ${header.offset}
+        }
+        """.trimIndent()
+    }
+
+    /**
+     * 序列化文件下载请求
+     */
+    private fun serializeRequest(request: FileTransferRequest): String {
+        return """
+        {
+            "transferId": "${request.transferId}",
+            "fileId": "${request.fileId}",
+            "fileName": "${request.fileName}",
+            "offset": ${request.offset}
+        }
+        """.trimIndent()
+    }
+
+    /**
+     * 反序列化文件头
+     */
+    private fun deserializeHeader(json: String): FileTransferHeader {
+        // 简单的JSON解析，生产环境应使用kotlinx.serialization
+        val transferId = Regex(""""transferId"\s*:\s*"([^"]+)""").find(json)?.groupValues?.get(1) ?: ""
+        val fileId = Regex(""""fileId"\s*:\s*"([^"]+)""").find(json)?.groupValues?.get(1) ?: ""
+        val fileName = Regex(""""fileName"\s*:\s*"([^"]+)""").find(json)?.groupValues?.get(1) ?: ""
+        val fileSize = Regex(""""fileSize"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toLong() ?: 0L
+        val chunkSize = Regex(""""chunkSize"\s*:\s*(\d+)""").find(json)?.groupValues?.get(1)?.toLong() ?: CHUNK_SIZE.toLong()
+
+        return FileTransferHeader(
+            transferId = transferId,
+            fileId = fileId,
+            fileName = fileName,
+            fileSize = fileSize,
+            chunkSize = chunkSize,
+            offset = 0L
+        )
+    }
 }
 
 /**
@@ -430,5 +864,16 @@ data class FileTransferHeader(
     val fileId: String,
     val fileName: String,
     val fileSize: Long,
-    val chunkSize: Long
+    val chunkSize: Long,
+    val offset: Long = 0L // 断点续传偏移量
+)
+
+/**
+ * 文件下载请求
+ */
+data class FileTransferRequest(
+    val transferId: String,
+    val fileId: String,
+    val fileName: String,
+    val offset: Long = 0L // 断点续传偏移量
 )

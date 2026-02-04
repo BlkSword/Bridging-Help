@@ -1,5 +1,8 @@
 package com.bridginghelp.app.ui.mydevice
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -12,11 +15,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.bridginghelp.core.model.DeviceCapability
 import com.bridginghelp.core.model.DeviceType
+import kotlinx.coroutines.delay
 
 /**
  * 我的设备屏幕
@@ -27,6 +34,16 @@ fun MyDeviceScreen(
     viewModel: MyDeviceViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    var showCopyToast by remember { mutableStateOf(false) }
+
+    // 自动隐藏复制提示
+    LaunchedEffect(showCopyToast) {
+        if (showCopyToast) {
+            delay(2000)
+            showCopyToast = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -35,50 +52,81 @@ fun MyDeviceScreen(
             )
         }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 设备信息卡片
-            DeviceInfoCard(
-                deviceName = uiState.deviceName,
-                deviceId = uiState.deviceId,
-                deviceType = uiState.deviceType
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // 设备信息卡片 - 突出显示设备ID和验证码
+                DeviceIdentityCard(
+                    deviceId = uiState.deviceId,
+                    deviceName = uiState.deviceName,
+                    onCopyDeviceId = {
+                        copyToClipboard(context, uiState.deviceId)
+                        showCopyToast = true
+                    },
+                    onCopyVerifyCode = {
+                        // 生成6位验证码（从设备ID取后6位）
+                        val verifyCode = uiState.deviceId.takeLast(6)
+                        copyToClipboard(context, verifyCode)
+                        showCopyToast = true
+                    }
+                )
 
-            // 系统信息卡片
-            SystemInfoCard(
-                osVersion = uiState.osVersion,
-                appVersion = uiState.appVersion,
-                screenWidth = uiState.screenWidth,
-                screenHeight = uiState.screenHeight,
-                screenDensity = uiState.screenDensity
-            )
+                // 系统信息卡片
+                SystemInfoCard(
+                    osVersion = uiState.osVersion,
+                    appVersion = uiState.appVersion,
+                    screenWidth = uiState.screenWidth,
+                    screenHeight = uiState.screenHeight,
+                    screenDensity = uiState.screenDensity
+                )
 
-            // 设备能力卡片
-            DeviceCapabilitiesCard(capabilities = uiState.capabilities)
+                // 设备能力卡片
+                DeviceCapabilitiesCard(capabilities = uiState.capabilities)
 
-            // 状态卡片
-            DeviceStatusCard(
-                isAccessibilityEnabled = uiState.isAccessibilityEnabled
-            )
+                // 状态卡片
+                DeviceStatusCard(
+                    isAccessibilityEnabled = uiState.isAccessibilityEnabled
+                )
+            }
+
+            // 复制成功提示
+            if (showCopyToast) {
+                Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp),
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ) {
+                    Text("已复制到剪贴板")
+                }
+            }
         }
     }
 }
 
 /**
- * 设备信息卡片
+ * 设备身份卡片 - 显示设备ID和验证码
  */
 @Composable
-private fun DeviceInfoCard(
-    deviceName: String,
+private fun DeviceIdentityCard(
     deviceId: String,
-    deviceType: DeviceType
+    deviceName: String,
+    onCopyDeviceId: () -> Unit,
+    onCopyVerifyCode: () -> Unit
 ) {
+    // 生成6位验证码
+    val verifyCode = deviceId.takeLast(6)
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -86,9 +134,10 @@ private fun DeviceInfoCard(
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
+            // 设备名称头部
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -107,10 +156,80 @@ private fun DeviceInfoCard(
                 )
             }
 
-            Divider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f))
 
-            InfoRow("设备ID", deviceId)
-            InfoRow("设备类型", getDeviceTypeName(deviceType))
+            // 设备ID
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "设备 ID",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                )
+                DeviceCodeRow(
+                    code = deviceId,
+                    onCopy = onCopyDeviceId
+                )
+            }
+
+            // 验证码
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "连接验证码",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                )
+                DeviceCodeRow(
+                    code = verifyCode,
+                    onCopy = onCopyVerifyCode
+                )
+            }
+
+            // 说明文字
+            Text(
+                text = "• 向好友提供设备 ID 或验证码即可建立连接\n• 点击上方代码可快速复制",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+            )
+        }
+    }
+}
+
+/**
+ * 设备代码行 - 显示可复制的代码
+ */
+@Composable
+private fun DeviceCodeRow(
+    code: String,
+    onCopy: () -> Unit
+) {
+    Surface(
+        onClick = onCopy,
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = code,
+                style = MaterialTheme.typography.titleLarge,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                letterSpacing = androidx.compose.ui.unit.TextUnit(0.2f, androidx.compose.ui.unit.TextUnitType.Em)
+            )
+            Text(
+                text = "点击复制",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 }
@@ -139,7 +258,7 @@ private fun SystemInfoCard(
 
             InfoRow("系统版本", osVersion)
             InfoRow("应用版本", appVersion)
-            InfoRow("屏幕分辨率", "${screenWidth}x$screenHeight}")
+            InfoRow("屏幕分辨率", "${screenWidth}x$screenHeight")
             InfoRow("屏幕密度", "${screenDensity} dpi")
         }
     }
@@ -284,6 +403,14 @@ private fun InfoRow(label: String, value: String) {
             fontWeight = FontWeight.Medium
         )
     }
+}
+
+/**
+ * 复制到剪贴板
+ */
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    clipboard?.setPrimaryClip(ClipData.newPlainText("device_info", text))
 }
 
 // 辅助函数

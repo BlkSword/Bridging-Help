@@ -16,9 +16,13 @@ import androidx.navigation.navArgument
 import com.bridginghelp.app.ui.controller.ControllerHomeScreen
 import com.bridginghelp.app.ui.controller.RemoteControlScreen
 import com.bridginghelp.app.ui.controlled.ControlledHomeScreen
+import com.bridginghelp.app.ui.feedback.FeedbackScreen
+import com.bridginghelp.app.ui.help.HelpScreen
 import com.bridginghelp.app.ui.mydevice.MyDeviceScreen
 import com.bridginghelp.app.ui.profile.ProfileScreen
 import com.bridginghelp.app.ui.remoteassist.RemoteAssistScreen
+import com.bridginghelp.app.ui.splash.SplashScreen
+import com.bridginghelp.app.ui.settings.SettingsScreen
 
 /**
  * 主导航图（带底部导航栏）
@@ -63,9 +67,21 @@ fun BridgingHelpAppNavGraph(
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = Destination.RemoteAssist.route,
+            startDestination = Destination.Splash.route,
             modifier = Modifier.padding(padding)
         ) {
+            // 开屏页面
+            composable(Destination.Splash.route) {
+                SplashScreen(
+                    onPermissionGranted = {
+                        // 权限全部授予后导航到主页
+                        navController.navigate(Destination.RemoteAssist.route) {
+                            popUpTo(Destination.Splash.route) { inclusive = true }
+                        }
+                    }
+                )
+            }
+
             // 我的设备
             composable(Destination.MyDevice.route) {
                 MyDeviceScreen()
@@ -85,7 +101,26 @@ fun BridgingHelpAppNavGraph(
 
             // 我的
             composable(Destination.Profile.route) {
-                ProfileScreen()
+                ProfileScreen(
+                    onNavigateToSettings = {
+                        navController.navigate(Destination.Settings.route)
+                    },
+                    onNavigateToHelp = {
+                        navController.navigate(Destination.Help.route)
+                    },
+                    onNavigateToFeedback = {
+                        navController.navigate(Destination.Feedback.route)
+                    }
+                )
+            }
+
+            // 设置页面
+            composable(Destination.Settings.route) {
+                SettingsScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    }
+                )
             }
 
             // 控制端主页
@@ -118,6 +153,24 @@ fun BridgingHelpAppNavGraph(
             // 受控端主页
             composable(Destination.ControlledHome.route) {
                 ControlledHomeScreen()
+            }
+
+            // 帮助页面
+            composable(Destination.Help.route) {
+                HelpScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    }
+                )
+            }
+
+            // 反馈页面
+            composable(Destination.Feedback.route) {
+                FeedbackScreen(
+                    onBack = {
+                        navController.popBackStack()
+                    }
+                )
             }
         }
     }

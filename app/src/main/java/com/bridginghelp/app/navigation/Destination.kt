@@ -9,11 +9,21 @@ import androidx.compose.material.icons.filled.Phone
  */
 sealed class Destination(val route: String) {
     /**
+     * 开屏页面
+     */
+    data object Splash : Destination("splash")
+
+    /**
      * 主页面（底部导航栏）
      */
     data object MyDevice : Destination("my_device")
     data object RemoteAssist : Destination("remote_assist")
     data object Profile : Destination("profile")
+
+    /**
+     * 统一的主页
+     */
+    data object Home : Destination("home")
 
     /**
      * 角色选择
@@ -38,6 +48,16 @@ sealed class Destination(val route: String) {
      * 设置
      */
     data object Settings : Destination("settings")
+
+    /**
+     * 帮助
+     */
+    data object Help : Destination("help")
+
+    /**
+     * 反馈
+     */
+    data object Feedback : Destination("feedback")
 }
 
 /**

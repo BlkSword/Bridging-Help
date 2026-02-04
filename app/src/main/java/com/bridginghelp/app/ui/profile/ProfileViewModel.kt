@@ -59,17 +59,17 @@ class ProfileViewModel @Inject constructor(
 
     /**
      * 显示帮助
+     * 注：导航逻辑已移至 ProfileScreen，通过回调实现
      */
     fun showHelp() {
-        LogWrapper.d(TAG, "Navigate to help")
-        // TODO: 实现帮助页面
+        LogWrapper.d(TAG, "Navigate to help - handled by ProfileScreen callback")
     }
 
     /**
      * 显示反馈
+     * 注：导航逻辑已移至 ProfileScreen，通过回调实现
      */
     fun showFeedback() {
-        LogWrapper.d(TAG, "Navigate to feedback")
-        // TODO: 实现反馈页面
+        LogWrapper.d(TAG, "Navigate to feedback - handled by ProfileScreen callback")
     }
 }

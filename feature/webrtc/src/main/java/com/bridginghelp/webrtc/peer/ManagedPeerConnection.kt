@@ -292,4 +292,11 @@ class ManagedPeerConnection @Inject constructor(
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
         }
     }
+
+    /**
+     * 获取远程媒体流
+     */
+    fun getRemoteStreams(): List<org.webrtc.MediaStream> {
+        return remoteStream.value?.let { listOf(it) } ?: emptyList()
+    }
 }

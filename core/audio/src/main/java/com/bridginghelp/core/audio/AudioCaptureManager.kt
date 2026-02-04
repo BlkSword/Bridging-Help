@@ -367,8 +367,16 @@ class AudioCaptureManager @Inject constructor(
  */
 class AudioEncoder @Inject constructor() {
 
+    companion object {
+        private const val TAG = "AudioEncoder"
+        private const val ENCODER_TIMEOUT_US = 10000L
+    }
+
+    private var encoder: android.media.MediaCodec? = null
+    private var decoder: android.media.MediaCodec? = null
+
     /**
-     * 编码音频帧
+     * 编码音频帧 (PCM -> OPUS/AAC)
      */
     fun encode(frame: AudioFrame, targetCodec: AudioCodec): AudioFrame {
         // 如果已经是目标编码，直接返回
@@ -376,14 +384,32 @@ class AudioEncoder @Inject constructor() {
             return frame
         }
 
-        // TODO: 实现音频转码逻辑
-        // 这里需要使用MediaCodec进行实际的编码转换
+        // PCM 不需要编码
+        if (targetCodec == AudioCodec.PCM) {
+            return frame
+        }
 
-        return frame.copy(codec = targetCodec)
+        return try {
+            // 初始化编码器
+            if (encoder == null) {
+                initEncoder(targetCodec, frame.sampleRate, frame.channels)
+            }
+
+            val encodedData = encodeFrame(frame.data)
+            AudioFrame(
+                codec = targetCodec,
+                sampleRate = frame.sampleRate,
+                channels = frame.channels,
+                data = encodedData
+            )
+        } catch (e: Exception) {
+            LogWrapper.e(TAG, "Encoding failed, returning original frame", e)
+            frame
+        }
     }
 
     /**
-     * 解码音频帧
+     * 解码音频帧 (OPUS/AAC -> PCM)
      */
     fun decode(frame: AudioFrame, targetCodec: AudioCodec): AudioFrame {
         // 如果已经是目标编码，直接返回
@@ -391,8 +417,154 @@ class AudioEncoder @Inject constructor() {
             return frame
         }
 
-        // TODO: 实现音频解码逻辑
+        // 如果源是 PCM，不需要解码
+        if (frame.codec == AudioCodec.PCM) {
+            return frame
+        }
 
-        return frame.copy(codec = targetCodec)
+        return try {
+            // 初始化解码器
+            if (decoder == null) {
+                initDecoder(frame.codec, frame.sampleRate, frame.channels)
+            }
+
+            val decodedData = decodeFrame(frame.data)
+            AudioFrame(
+                codec = AudioCodec.PCM,
+                sampleRate = frame.sampleRate,
+                channels = frame.channels,
+                data = decodedData
+            )
+        } catch (e: Exception) {
+            LogWrapper.e(TAG, "Decoding failed, returning original frame", e)
+            frame
+        }
+    }
+
+    /**
+     * 初始化编码器
+     */
+    private fun initEncoder(codec: AudioCodec, sampleRate: Int, channels: Int) {
+        val mimeType = when (codec) {
+            AudioCodec.OPUS -> "audio/opus"
+            AudioCodec.AAC -> "audio/mp4a-latm"
+            else -> throw IllegalArgumentException("Unsupported codec for encoding: $codec")
+        }
+
+        encoder = android.media.MediaCodec.createEncoderByType(mimeType).apply {
+            val format = android.media.MediaFormat().apply {
+                setString(android.media.MediaFormat.KEY_MIME, mimeType)
+                setInteger(android.media.MediaFormat.KEY_SAMPLE_RATE, sampleRate)
+                setInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT, channels)
+                setInteger(android.media.MediaFormat.KEY_BIT_RATE, 64000)
+                setInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE, 8192)
+                if (codec == AudioCodec.AAC) {
+                    setInteger(android.media.MediaFormat.KEY_AAC_PROFILE, 2) // AAC LC
+                }
+            }
+
+            configure(format, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+            start()
+        }
+    }
+
+    /**
+     * 初始化解码器
+     */
+    private fun initDecoder(codec: AudioCodec, sampleRate: Int, channels: Int) {
+        val mimeType = when (codec) {
+            AudioCodec.OPUS -> "audio/opus"
+            AudioCodec.AAC -> "audio/mp4a-latm"
+            else -> throw IllegalArgumentException("Unsupported codec for decoding: $codec")
+        }
+
+        decoder = android.media.MediaCodec.createDecoderByType(mimeType).apply {
+            val format = android.media.MediaFormat().apply {
+                setString(android.media.MediaFormat.KEY_MIME, mimeType)
+                setInteger(android.media.MediaFormat.KEY_SAMPLE_RATE, sampleRate)
+                setInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT, channels)
+                setInteger(android.media.MediaFormat.KEY_MAX_INPUT_SIZE, 8192)
+                if (codec == AudioCodec.AAC) {
+                    setInteger(android.media.MediaFormat.KEY_AAC_PROFILE, 2)
+                }
+                setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(0x11.toByte(), 0x90.toByte())))
+            }
+
+            configure(format, null, null, 0)
+            start()
+        }
+    }
+
+    /**
+     * 编码帧数据
+     */
+    private fun encodeFrame(pcmData: ByteArray): ByteArray {
+        val encoder = this.encoder ?: throw IllegalStateException("Encoder not initialized")
+
+        // 获取输入缓冲区
+        val inputBufferIndex = encoder.dequeueInputBuffer(ENCODER_TIMEOUT_US)
+        if (inputBufferIndex >= 0) {
+            val inputBuffer = encoder.getInputBuffer(inputBufferIndex)
+            inputBuffer?.clear()
+            inputBuffer?.put(pcmData)
+            encoder.queueInputBuffer(inputBufferIndex, 0, pcmData.size, 0, 0)
+        }
+
+        // 获取输出缓冲区
+        val outputBufferInfo = android.media.MediaCodec.BufferInfo()
+        val outputBufferIndex = encoder.dequeueOutputBuffer(outputBufferInfo, ENCODER_TIMEOUT_US)
+
+        return if (outputBufferIndex >= 0) {
+            val outputBuffer = encoder.getOutputBuffer(outputBufferIndex)
+            val encodedData = ByteArray(outputBufferInfo.size)
+            outputBuffer?.position(outputBufferInfo.offset)
+            outputBuffer?.get(encodedData)
+            encoder.releaseOutputBuffer(outputBufferIndex, false)
+            encodedData
+        } else {
+            pcmData // 编码失败，返回原始数据
+        }
+    }
+
+    /**
+     * 解码帧数据
+     */
+    private fun decodeFrame(encodedData: ByteArray): ByteArray {
+        val decoder = this.decoder ?: throw IllegalStateException("Decoder not initialized")
+
+        // 获取输入缓冲区
+        val inputBufferIndex = decoder.dequeueInputBuffer(ENCODER_TIMEOUT_US)
+        if (inputBufferIndex >= 0) {
+            val inputBuffer = decoder.getInputBuffer(inputBufferIndex)
+            inputBuffer?.clear()
+            inputBuffer?.put(encodedData)
+            decoder.queueInputBuffer(inputBufferIndex, 0, encodedData.size, 0, 0)
+        }
+
+        // 获取输出缓冲区
+        val outputBufferInfo = android.media.MediaCodec.BufferInfo()
+        val outputBufferIndex = decoder.dequeueOutputBuffer(outputBufferInfo, ENCODER_TIMEOUT_US)
+
+        return if (outputBufferIndex >= 0) {
+            val outputBuffer = decoder.getOutputBuffer(outputBufferIndex)
+            val decodedData = ByteArray(outputBufferInfo.size)
+            outputBuffer?.position(outputBufferInfo.offset)
+            outputBuffer?.get(decodedData)
+            decoder.releaseOutputBuffer(outputBufferIndex, false)
+            decodedData
+        } else {
+            ByteArray(0) // 解码失败，返回空数据
+        }
+    }
+
+    /**
+     * 释放资源
+     */
+    fun release() {
+        encoder?.release()
+        encoder = null
+
+        decoder?.release()
+        decoder = null
     }
 }

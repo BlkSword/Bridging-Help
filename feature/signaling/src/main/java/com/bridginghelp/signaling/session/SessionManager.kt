@@ -1,8 +1,10 @@
 package com.bridginghelp.signaling.session
 
 import com.bridginghelp.core.common.result.Result
+import com.bridginghelp.core.common.result.message
 import com.bridginghelp.core.common.util.LogWrapper
 import com.bridginghelp.core.model.DeviceInfo
+import com.bridginghelp.core.model.DeviceCapability
 import com.bridginghelp.core.model.SessionState
 import com.bridginghelp.core.model.SignalingMessage
 import com.bridginghelp.core.network.SignalingClient
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.webrtc.SessionDescription
+import org.webrtc.MediaStreamTrack
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -100,10 +103,14 @@ class SessionManager @Inject constructor(
         return try {
             val sessionId = generateSessionId()
 
-            // 创建PeerConnection
+            // 创建 PeerConnection 和 DataChannel
             val peerConnection = createAndConfigurePeerConnection()
+            val dataChannel = com.bridginghelp.webrtc.datachannel.DataChannelManager()
 
-            // 创建Offer
+            // 初始化数据通道
+            dataChannel.initialize(peerConnection, "remote_events")
+
+            // 创建 Offer
             val offerResult = peerConnection.createOffer()
             if (offerResult !is Result.Success) {
                 return Result.Error(offerResult.errorOrNull()!!)
@@ -115,8 +122,23 @@ class SessionManager @Inject constructor(
                 return Result.Error(setDescriptionResult.errorOrNull()!!)
             }
 
-            // 发送Offer
+            // 发送 Offer
             signalingClient.sendOffer(sessionId, offerResult.data)
+
+            // 创建临时会话信息
+            val deviceInfo = DeviceInfo(
+                deviceId = remoteDeviceId,
+                deviceName = "Remote Device",
+                deviceType = com.bridginghelp.core.model.DeviceType.PHONE,
+                osVersion = "",
+                appVersion = "",
+                capabilities = setOf(
+                    DeviceCapability.SCREEN_CAPTURE,
+                    DeviceCapability.TOUCH_INPUT,
+                    DeviceCapability.MULTI_TOUCH
+                )
+            )
+            activeSession = RemoteSession(sessionId, deviceInfo, peerConnection, dataChannel)
 
             _sessionState.value = SessionState.Connecting(sessionId, remoteDeviceId)
 
@@ -131,23 +153,26 @@ class SessionManager @Inject constructor(
 
     /**
      * 加入会话（受控端接受）
+     * 等待控制端的 Offer 消息，然后创建 Answer
      */
-    suspend fun joinSession(sessionId: String): Result<Unit> {
+    suspend fun joinSession(sessionId: String, remoteDevice: DeviceInfo): Result<Unit> {
         LogWrapper.d(TAG, "Joining session: $sessionId")
 
         // 确保 WebRTC 已初始化
         ensureInitialized()
 
         return try {
-            // 创建PeerConnection
+            // 创建 PeerConnection
             val peerConnection = createAndConfigurePeerConnection()
+            val dataChannel = com.bridginghelp.webrtc.datachannel.DataChannelManager()
 
-            // TODO: 等待Offer消息并创建Answer
-            // 这里需要实现完整的信令流程
+            // 暂存会话信息，等待 Offer 消息
+            val pendingSession = PendingSession(sessionId, remoteDevice, peerConnection, dataChannel)
+            pendingSessions[sessionId] = pendingSession
 
-            _sessionState.value = SessionState.Connecting(sessionId, null)
+            _sessionState.value = SessionState.Connecting(sessionId, remoteDevice.deviceId)
 
-            LogWrapper.i(TAG, "Joining session: $sessionId")
+            LogWrapper.i(TAG, "Joining session: $sessionId, waiting for offer")
             Result.Success(Unit)
 
         } catch (e: Exception) {
@@ -155,6 +180,22 @@ class SessionManager @Inject constructor(
             Result.Error(com.bridginghelp.core.common.result.ErrorEntity.fromException(e))
         }
     }
+
+    /**
+     * 等待中的会话信息
+     */
+    private data class PendingSession(
+        val sessionId: String,
+        val remoteDevice: DeviceInfo,
+        val peerConnection: ManagedPeerConnection,
+        val dataChannel: com.bridginghelp.webrtc.datachannel.DataChannelManager
+    )
+
+    /**
+     * 等待中的会话映射
+     * sessionId -> PendingSession
+     */
+    private val pendingSessions = mutableMapOf<String, PendingSession>()
 
     /**
      * 结束会话
@@ -220,43 +261,104 @@ class SessionManager @Inject constructor(
     }
 
     /**
-     * 处理Offer
+     * 处理 Offer（受控端）
      */
     private suspend fun handleOffer(message: SignalingMessage.Offer) {
         LogWrapper.d(TAG, "Handling offer for session: ${message.sessionId}")
 
-        activeSession?.peerConnection?.let { peerConnection ->
-            val sdp = SessionDescription(
-                SessionDescription.Type.OFFER,
-                message.sdp
+        // 检查是否有等待中的会话
+        val pendingSession = pendingSessions[message.sessionId]
+        if (pendingSession == null) {
+            LogWrapper.w(TAG, "No pending session found for: ${message.sessionId}")
+            return
+        }
+
+        val peerConnection = pendingSession.peerConnection
+        val sdp = SessionDescription(SessionDescription.Type.OFFER, message.sdp)
+
+        // 设置远程描述
+        val remoteDescResult = peerConnection.setRemoteDescription(sdp)
+        if (remoteDescResult !is Result.Success) {
+            val errorMsg = when (remoteDescResult) {
+                is Result.Error -> remoteDescResult.error.message
+                else -> "Loading state"
+            }
+            LogWrapper.e(TAG, "Failed to set remote description: $errorMsg")
+            return
+        }
+
+        // 创建 Answer
+        val answerResult = peerConnection.createAnswer()
+        if (answerResult is Result.Success) {
+            // 设置本地描述
+            val localDescResult = peerConnection.setLocalDescription(answerResult.data)
+            if (localDescResult !is Result.Success) {
+                val errorMsg = when (localDescResult) {
+                    is Result.Error -> localDescResult.error.message
+                    else -> "Loading state"
+                }
+                LogWrapper.e(TAG, "Failed to set local description: $errorMsg")
+                return
+            }
+
+            // 发送 Answer
+            signalingClient.sendAnswer(message.sessionId, answerResult.data)
+
+            // 将等待中的会话转为活跃会话
+            activeSession = RemoteSession(
+                sessionId = pendingSession.sessionId,
+                remoteDevice = pendingSession.remoteDevice,
+                peerConnection = peerConnection,
+                dataChannel = pendingSession.dataChannel
+            )
+            pendingSessions.remove(message.sessionId)
+
+            // 更新状态
+            _sessionState.value = SessionState.Connected(
+                sessionId = message.sessionId,
+                remoteDevice = pendingSession.remoteDevice,
+                quality = com.bridginghelp.core.model.ConnectionQuality.GOOD
             )
 
-            // 设置远程描述
-            peerConnection.setRemoteDescription(sdp)
+            // 启动心跳
+            startHeartbeat(message.sessionId)
 
-            // 创建Answer
-            val answerResult = peerConnection.createAnswer()
-            if (answerResult is Result.Success) {
-                peerConnection.setLocalDescription(answerResult.data)
-                signalingClient.sendAnswer(message.sessionId, answerResult.data)
-            }
+            LogWrapper.i(TAG, "Answer sent and session established: ${message.sessionId}")
         }
     }
 
     /**
-     * 处理Answer
+     * 处理 Answer（控制端）
      */
     private suspend fun handleAnswer(message: SignalingMessage.Answer) {
         LogWrapper.d(TAG, "Handling answer for session: ${message.sessionId}")
 
-        activeSession?.peerConnection?.let { peerConnection ->
-            val sdp = SessionDescription(
-                SessionDescription.Type.ANSWER,
-                message.sdp
-            )
+        activeSession?.let { session ->
+            val peerConnection = session.peerConnection
+            val sdp = SessionDescription(SessionDescription.Type.ANSWER, message.sdp)
 
-            peerConnection.setRemoteDescription(sdp)
-        }
+            // 设置远程描述
+            val result = peerConnection.setRemoteDescription(sdp)
+            if (result is Result.Success) {
+                // 更新会话状态为已连接
+                _sessionState.value = SessionState.Connected(
+                    sessionId = message.sessionId,
+                    remoteDevice = session.remoteDevice,
+                    quality = com.bridginghelp.core.model.ConnectionQuality.GOOD
+                )
+
+                // 启动心跳
+                startHeartbeat(message.sessionId)
+
+                LogWrapper.i(TAG, "Session established: ${message.sessionId}")
+            } else {
+                val errorMsg = when (result) {
+                    is Result.Error -> result.error.message
+                    else -> "Loading state"
+                }
+                LogWrapper.e(TAG, "Failed to set remote description: $errorMsg")
+            }
+        } ?: LogWrapper.w(TAG, "No active session found for answer: ${message.sessionId}")
     }
 
     /**
@@ -288,12 +390,80 @@ class SessionManager @Inject constructor(
     }
 
     /**
-     * 创建并配置PeerConnection
+     * 创建并配置 PeerConnection，包括 ICE 候选收集
      */
     private fun createAndConfigurePeerConnection(): ManagedPeerConnection {
-        // 这里应该注入ManagedPeerConnection
-        // 为简化示例，返回一个空实现
-        return ManagedPeerConnection(peerConnectionFactory)
+        val peerConnection = ManagedPeerConnection(peerConnectionFactory)
+
+        // 创建观察者来收集 ICE 候选
+        val observer = object : org.webrtc.PeerConnection.Observer {
+            override fun onSignalingChange(newState: org.webrtc.PeerConnection.SignalingState?) {
+                LogWrapper.d(TAG, "Signaling state changed: $newState")
+            }
+
+            override fun onIceConnectionChange(newState: org.webrtc.PeerConnection.IceConnectionState?) {
+                LogWrapper.d(TAG, "ICE connection state changed: $newState")
+            }
+
+            override fun onIceConnectionReceivingChange(receiving: Boolean) {
+                LogWrapper.d(TAG, "ICE connection receiving changed: $receiving")
+            }
+
+            override fun onIceGatheringChange(newState: org.webrtc.PeerConnection.IceGatheringState?) {
+                LogWrapper.d(TAG, "ICE gathering state changed: $newState")
+            }
+
+            override fun onIceCandidate(candidate: org.webrtc.IceCandidate?) {
+                candidate?.let {
+                    LogWrapper.d(TAG, "ICE candidate gathered: ${it.sdpMid}")
+
+                    // 发送 ICE 候选到信令服务器
+                    scope.launch {
+                        activeSession?.let { session ->
+                            signalingClient.sendIceCandidate(session.sessionId, it)
+                        } ?: run {
+                            // 如果没有活跃会话，检查等待中的会话
+                            pendingSessions.entries.firstOrNull()?.let { (sessionId, _) ->
+                                signalingClient.sendIceCandidate(sessionId, it)
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun onIceCandidatesRemoved(candidates: Array<out org.webrtc.IceCandidate>?) {
+                LogWrapper.d(TAG, "ICE candidates removed")
+            }
+
+            override fun onAddStream(stream: org.webrtc.MediaStream?) {
+                LogWrapper.d(TAG, "Media stream added")
+            }
+
+            override fun onRemoveStream(stream: org.webrtc.MediaStream?) {
+                LogWrapper.d(TAG, "Media stream removed")
+            }
+
+            override fun onDataChannel(channel: org.webrtc.DataChannel?) {
+                LogWrapper.d(TAG, "Data channel created by remote peer")
+
+                // 设置远程创建的数据通道
+                channel?.let {
+                    activeSession?.dataChannel?.setRemoteDataChannel(it)
+                        ?: pendingSessions.values.firstOrNull()?.dataChannel?.setRemoteDataChannel(it)
+                }
+            }
+
+            override fun onRenegotiationNeeded() {
+                LogWrapper.d(TAG, "Renegotiation needed")
+            }
+
+            override fun onAddTrack(receiver: org.webrtc.RtpReceiver?, streams: Array<out org.webrtc.MediaStream>?) {
+                LogWrapper.d(TAG, "Track added")
+            }
+        }
+
+        peerConnection.initialize(observer)
+        return peerConnection
     }
 
     /**
@@ -322,5 +492,103 @@ class SessionManager @Inject constructor(
      */
     private fun generateSessionId(): String {
         return "session_${System.currentTimeMillis()}_${(0..9999).random()}"
+    }
+
+    /**
+     * 获取活跃会话的数据通道管理器
+     */
+    fun getDataChannelManager(): com.bridginghelp.webrtc.datachannel.DataChannelManager? {
+        return activeSession?.dataChannel
+    }
+
+    /**
+     * 获取活跃会话的 PeerConnection
+     */
+    fun getPeerConnection(): ManagedPeerConnection? {
+        return activeSession?.peerConnection
+    }
+
+    /**
+     * 检查是否有活跃会话
+     */
+    fun hasActiveSession(): Boolean {
+        return activeSession != null
+    }
+
+    /**
+     * 获取当前会话ID
+     */
+    fun getCurrentSessionId(): String? {
+        return activeSession?.sessionId
+    }
+
+    /**
+     * 获取当前远程设备ID
+     */
+    fun getCurrentRemoteDeviceId(): String? {
+        return activeSession?.remoteDevice?.deviceId
+    }
+
+    /**
+     * 重新连接会话
+     */
+    suspend fun reconnectSession(): Result<String> {
+        val sessionId = activeSession?.sessionId
+        val remoteDeviceId = activeSession?.remoteDevice?.deviceId
+
+        if (sessionId == null || remoteDeviceId == null) {
+            return Result.Error(
+                com.bridginghelp.core.common.result.ErrorEntity.Unknown("No active session to reconnect")
+            )
+        }
+
+        LogWrapper.d(TAG, "Reconnecting to session: $sessionId")
+
+        // 结束当前会话
+        endSession()
+
+        // 重新创建会话
+        return createSession(remoteDeviceId)
+    }
+
+    /**
+     * 获取远程视频轨道
+     */
+    fun getRemoteVideoTrack(): Any? {
+        val peerConnection = activeSession?.peerConnection ?: return null
+        val streams = peerConnection.getRemoteStreams()
+
+        for (stream in streams) {
+            for (track in stream.videoTracks) {
+                if (track.kind() == "video") {
+                    return track
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 获取远程音频轨道
+     */
+    fun getRemoteAudioTrack(): org.webrtc.MediaStreamTrack? {
+        val peerConnection = activeSession?.peerConnection ?: return null
+        val streams = peerConnection.getRemoteStreams()
+
+        for (stream in streams) {
+            for (track in stream.audioTracks) {
+                if (track.kind() == "audio") {
+                    return track
+                }
+            }
+        }
+        return null
+    }
+
+    /**
+     * 获取所有远程媒体流
+     */
+    fun getRemoteStreams(): List<org.webrtc.MediaStream> {
+        return activeSession?.peerConnection?.getRemoteStreams() ?: emptyList()
     }
 }
